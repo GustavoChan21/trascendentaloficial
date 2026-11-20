@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { supabase, hasCloud, loadSite, saveSite, loadBookings, setBookingStatus, checkAvailability, createBookingCloud, registerProofCloud } from './supabase.js'
 
 const STORAGE_KEY = 'guiaTuristicoCMS.v1'
 const BOOKINGS_KEY = 'guiaTuristicoBookings.v1'
@@ -10,11 +11,11 @@ const todayISO = () => new Date().toISOString().slice(0, 10)
 
 const initialConfig = {
   brand: {
-    name: 'Camino Maya Tours',
-    tagline: 'Historias, sabores y rincones que sólo un guía local puede mostrarte.',
-    description: 'Recorridos privados y experiencias auténticas para descubrir la región con contexto, seguridad y atención personalizada.',
+    name: 'Trascendental Oficial',
+    tagline: 'Experiencias que trascienden cada destino.',
+    description: 'Explora cultura, naturaleza e historia con experiencias guiadas y atención personalizada.',
     heroImage: 'https://images.unsplash.com/photo-1518638150340-f706e86654de?auto=format&fit=crop&w=1800&q=80',
-    logoText: 'CM',
+    logoText: 'TO',
     city: 'Campeche, México',
     phone: '+52 999 000 0000',
     whatsapp: '529990000000',
@@ -79,7 +80,7 @@ const initialConfig = {
     account: '1234567890',
     holdHours: 2,
     referencePrefix: 'GUIA',
-    instructions: 'Realiza la transferencia dentro de la vigencia indicada y sube tu comprobante. El lugar queda apartado temporalmente hasta validar el pago.'
+    instructions: 'Realiza la transferencia dentro de la vigencia indicada y envía el comprobante por WhatsApp. El lugar queda apartado temporalmente hasta validar el pago.'
   },
   policies: {
     cancellation: 'Cancelación sin penalización hasta 48 horas antes. Después de ese plazo el anticipo no es reembolsable.',
@@ -121,32 +122,105 @@ function Icon({ name, size = 18 }) {
 
 export default function App() {
   const [config, setConfig] = useState(() => readJson(STORAGE_KEY, initialConfig))
-  const [bookings, setBookings] = useState(() => readJson(BOOKINGS_KEY, []))
+  const [bookings, setBookings] = useState(() => hasCloud ? [] : readJson(BOOKINGS_KEY, []))
   const [view, setView] = useState('public')
   const [bookingService, setBookingService] = useState(null)
   const [toast, setToast] = useState('')
+  const [cloudReady, setCloudReady] = useState(!hasCloud)
+  const [admin, setAdmin] = useState(false)
+  const [authReady, setAuthReady] = useState(!hasCloud)
+  const saved = useRef('')
+  const [syncError, setSyncError] = useState('')
 
-  useEffect(() => localStorage.setItem(STORAGE_KEY, JSON.stringify(config)), [config])
-  useEffect(() => localStorage.setItem(BOOKINGS_KEY, JSON.stringify(bookings)), [bookings])
+  useEffect(() => {
+    if (!hasCloud) return
+    let alive = true
+    async function start() {
+      try {
+        const remote = await loadSite()
+        if (!alive) return
+        if (remote?.brand && Array.isArray(remote?.services)) {
+          saved.current = JSON.stringify(remote)
+          setConfig(remote)
+        } else {
+          saved.current = JSON.stringify(initialConfig)
+          setConfig(initialConfig)
+        }
+        setCloudReady(true)
+        const {data:{user}} = await supabase.auth.getUser()
+        if (user) {
+          const {data} = await supabase.from('admin_users').select('user_id').eq('user_id',user.id).maybeSingle()
+          if (alive && data) { setAdmin(true); setBookings(await loadBookings()) }
+        }
+        if(alive) setAuthReady(true)
+      } catch (err) {
+        if (alive) { setSyncError(err.message); setCloudReady(true); setAuthReady(true) }
+      }
+    }
+    start()
+    const {data:{subscription}} = supabase.auth.onAuthStateChange(() => {
+      // Login se procesa desde AdminLogin para evitar lecturas desordenadas.
+    })
+    return () => { alive=false;subscription.unsubscribe() }
+  }, [])
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(config))
+    if (!hasCloud || !admin || !cloudReady) return
+    const signature = JSON.stringify(config)
+    if(signature===saved.current) return
+    const timer = setTimeout(async()=>{
+      try { await saveSite(config); saved.current=signature; setSyncError('') }
+      catch(e){ setSyncError('No se guardaron los cambios en Supabase: '+e.message) }
+    },900)
+    return ()=>clearTimeout(timer)
+  }, [config,admin,cloudReady])
+  useEffect(() => { if(!hasCloud) localStorage.setItem(BOOKINGS_KEY,JSON.stringify(bookings)) }, [bookings])
   useEffect(() => {
     if (!toast) return
     const timer = setTimeout(() => setToast(''), 2600)
     return () => clearTimeout(timer)
   }, [toast])
 
+  async function signedIn(){
+    const {data:{user}}=await supabase.auth.getUser()
+    if(!user) throw new Error('No se encontró la sesión')
+    const {data,error}=await supabase.from('admin_users').select('user_id').eq('user_id',user.id).maybeSingle()
+    if(error) throw error
+    if(!data) {await supabase.auth.signOut();throw new Error('Tu usuario no tiene permisos de administrador')}
+    setBookings(await loadBookings());setAdmin(true);setSyncError('')
+  }
+  async function signOut(){await supabase.auth.signOut();setAdmin(false);setBookings([]);setView('public')}
   const cssVars = { '--primary': config.brand.primaryColor, '--accent': config.brand.accentColor }
+  return <div style={cssVars}>
+    {syncError && <div className="cloud-error" role="alert">{syncError}</div>}
+    {!cloudReady || !authReady ? <div className="site-loader">Cargando sitio...</div> : view==='public' ? (
+      <PublicSite config={config} bookings={bookings} onAdmin={() => setView('admin')} onBook={setBookingService} />
+    ) : hasCloud && !admin ? (
+      <AdminLogin onSuccess={signedIn} onPublic={()=>setView('public')} />
+    ) : (
+      <Admin config={config} setConfig={setConfig} bookings={bookings} setBookings={setBookings}
+      onPublic={() => setView('public')} onLogout={signOut} notify={setToast} />
+    )}
+    {bookingService && <BookingModal service={bookingService} config={config} bookings={bookings} setBookings={setBookings} onClose={() => setBookingService(null)} notify={setToast} />}
+    {toast && <div className="toast"><Icon name="check" /> {toast}</div>}
+  </div>
+}
 
-  return (
-    <div style={cssVars}>
-      {view === 'public' ? (
-        <PublicSite config={config} bookings={bookings} onAdmin={() => setView('admin')} onBook={setBookingService} />
-      ) : (
-        <Admin config={config} setConfig={setConfig} bookings={bookings} setBookings={setBookings} onPublic={() => setView('public')} notify={setToast} />
-      )}
-      {bookingService && <BookingModal service={bookingService} config={config} bookings={bookings} setBookings={setBookings} onClose={() => setBookingService(null)} notify={setToast} />}
-      {toast && <div className="toast"><Icon name="check" /> {toast}</div>}
-    </div>
-  )
+function AdminLogin({onSuccess,onPublic}){
+  const [email,setEmail]=useState('');const [password,setPassword]=useState('');const [busy,setBusy]=useState(false);const [error,setError]=useState('')
+  async function login(e){e.preventDefault();setBusy(true);setError('')
+    try{const {error}=await supabase.auth.signInWithPassword({email,password});if(error)throw error;await onSuccess()}
+    catch(e){setError(e.message)}finally{setBusy(false)}
+  }
+  return <div className="login-page"><form className="login-panel" onSubmit={login}>
+    <span className="kicker">ACCESO PRIVADO</span><h1>Administración</h1><p>Inicia sesión con una cuenta autorizada en Supabase.</p>
+    <Field label="Correo electrónico"><input type="email" autoComplete="username" required value={email} onChange={e=>setEmail(e.target.value)}/></Field>
+    <Field label="Contraseña"><input type="password" autoComplete="current-password" required value={password} onChange={e=>setPassword(e.target.value)}/></Field>
+    {error && <p role="alert" className="login-error">{error}</p>}
+    <button className="btn btn-primary btn-full" disabled={busy}>{busy?'Validando...':'Iniciar sesión'}</button>
+    <button type="button" className="btn btn-ghost btn-full" onClick={onPublic}>Volver al sitio</button>
+  </form></div>
 }
 
 function PublicSite({ config, bookings, onAdmin, onBook }) {
@@ -186,8 +260,8 @@ function PublicSite({ config, bookings, onAdmin, onBook }) {
 
     <section id="como-reservar" className="steps-section"><div className="wrap"><span className="kicker kicker-light">RESERVA SIN COMPLICACIONES</span><h2>Tu lugar queda apartado mientras realizas la transferencia</h2><div className="steps-grid">
       <Step n="01" title="Elige fecha y personas" text="El sistema valida el cupo disponible antes de crear la pre-reserva." />
-      <Step n="02" title="Recibe datos de transferencia" text={`Se genera un folio y una vigencia de ${config.transfer.holdHours} horas para completar el anticipo.`} />
-      <Step n="03" title="Sube tu comprobante" text="El administrador valida el pago y cambia la reserva a confirmada." />
+      <Step n="02" title="Recibe instrucciones de pago" text={`Se genera un folio y una vigencia de ${config.transfer.holdHours} horas para completar el anticipo.`} />
+      <Step n="03" title="Envía el comprobante" text="Comparte el comprobante por WhatsApp para que el guía verifique el pago." />
       <Step n="04" title="Recibe la confirmación" text="Obtienes indicaciones finales, punto de encuentro y recomendaciones." />
     </div></div></section>
 
@@ -204,16 +278,20 @@ function BookingModal({ service, config, bookings, setBookings, onClose, notify 
   const [form, setForm] = useState({ date: todayISO(), time: '09:00', adults: 2, name: '', phone: '', email: '', notes: '' })
   const [created, setCreated] = useState(null)
   const [proofName, setProofName] = useState('')
+  const [remoteSeats,setRemoteSeats]=useState(null)
+  const [busy,setBusy]=useState(false)
 
   const activeSeats = useMemo(() => bookings.filter(b => b.serviceId === service.id && b.date === form.date && (b.status === 'confirmed' || (['awaiting_transfer','proof_uploaded'].includes(b.status) && new Date(b.expiresAt) > new Date()))).reduce((sum, b) => sum + Number(b.people || 0), 0), [bookings, service.id, form.date])
-  const available = Math.max(0, service.capacity - activeSeats)
+  const available = hasCloud ? (remoteSeats ?? 0) : Math.max(0, service.capacity - activeSeats)
+  useEffect(()=>{if(!hasCloud)return;let mounted=true;setRemoteSeats(null);checkAvailability(service.id,form.date,form.time).then(n=>{if(mounted)setRemoteSeats(n)}).catch(e=>{if(mounted){setRemoteSeats(0);notify('No se pudo consultar disponibilidad: '+e.message)}});return()=>{mounted=false}},[service.id,form.date,form.time])
   const people = Math.max(1, Number(form.adults || 1))
   const total = service.price * people
   const deposit = Math.round(total * (service.depositPercent / 100) * 100) / 100
 
-  function createBooking() {
+  async function createBooking() {
     if (!form.name.trim() || !form.phone.trim() || !form.email.trim()) return notify('Completa nombre, teléfono y correo.')
     if (people > available) return notify(`Sólo hay ${available} lugares disponibles.`)
+    if(hasCloud){setBusy(true);try{const booking=await createBookingCloud(service,form);setCreated(booking);setBookings(prev=>[booking,...prev]);setRemoteSeats(n=>Math.max(0,(n||0)-people));setStep(3)}catch(e){notify('No se pudo reservar: '+e.message)}finally{setBusy(false)};return}
     const now = Date.now()
     const booking = {
       id: uid(),
@@ -238,12 +316,13 @@ function BookingModal({ service, config, bookings, setBookings, onClose, notify 
     setStep(3)
   }
 
-  function attachProof() {
+  async function attachProof() {
     if (!proofName) return notify('Selecciona un comprobante primero.')
+    if(hasCloud){setBusy(true);try{await registerProofCloud(created,proofName)}catch(e){notify(e.message);setBusy(false);return}finally{setBusy(false)}}
     const updated = { ...created, proofName, status: 'proof_uploaded' }
     setBookings(prev => prev.map(b => b.id === created.id ? updated : b))
     setCreated(updated)
-    notify('Comprobante registrado. La reserva quedó en validación.')
+    notify('Referencia registrada. Envía el archivo por WhatsApp para su validación.')
   }
 
   const expired = created && new Date(created.expiresAt) < new Date()
@@ -254,15 +333,15 @@ function BookingModal({ service, config, bookings, setBookings, onClose, notify 
 
     {step === 1 && <div className="modal-content"><h3>Selecciona fecha y cupo</h3><div className="form-grid"><Field label="Fecha"><input type="date" min={todayISO()} value={form.date} onChange={e => setForm({...form, date:e.target.value})}/></Field><Field label="Hora"><input type="time" value={form.time} onChange={e => setForm({...form, time:e.target.value})}/></Field><Field label="Personas"><input type="number" min="1" max={Math.max(1, available)} value={form.adults} onChange={e => setForm({...form, adults:e.target.value})}/></Field><div className="availability-box"><strong>{available}</strong><span>lugares disponibles</span></div></div><div className="price-summary"><span>Total estimado <b>{money(total, service.currency)}</b></span><span>Anticipo para apartar <b>{money(deposit, service.currency)}</b></span></div><button className="btn btn-primary btn-full" disabled={available < 1} onClick={() => setStep(2)}>Continuar <Icon name="arrow" /></button></div>}
 
-    {step === 2 && <div className="modal-content"><h3>Datos de contacto</h3><div className="form-grid"><Field label="Nombre completo"><input value={form.name} onChange={e => setForm({...form,name:e.target.value})} placeholder="Nombre del responsable"/></Field><Field label="WhatsApp"><input value={form.phone} onChange={e => setForm({...form,phone:e.target.value})} placeholder="+52..."/></Field><Field label="Correo"><input type="email" value={form.email} onChange={e => setForm({...form,email:e.target.value})} placeholder="correo@ejemplo.com"/></Field><Field label="Notas"><input value={form.notes} onChange={e => setForm({...form,notes:e.target.value})} placeholder="Niños, accesibilidad, preferencias..."/></Field></div><div className="modal-actions"><button className="btn btn-ghost" onClick={() => setStep(1)}>Atrás</button><button className="btn btn-primary" onClick={createBooking}>Generar apartado</button></div></div>}
+    {step === 2 && <div className="modal-content"><h3>Datos de contacto</h3><div className="form-grid"><Field label="Nombre completo"><input value={form.name} onChange={e => setForm({...form,name:e.target.value})} placeholder="Nombre del responsable"/></Field><Field label="WhatsApp"><input value={form.phone} onChange={e => setForm({...form,phone:e.target.value})} placeholder="+52..."/></Field><Field label="Correo"><input type="email" value={form.email} onChange={e => setForm({...form,email:e.target.value})} placeholder="correo@ejemplo.com"/></Field><Field label="Notas"><input value={form.notes} onChange={e => setForm({...form,notes:e.target.value})} placeholder="Niños, accesibilidad, preferencias..."/></Field></div><div className="modal-actions"><button className="btn btn-ghost" onClick={() => setStep(1)}>Atrás</button><button className="btn btn-primary" onClick={createBooking} disabled={busy || (hasCloud && remoteSeats===null)}>{busy?'Apartando...':'Generar apartado'}</button></div></div>}
 
-    {step === 3 && created && <div className="modal-content"><div className={`status-banner ${expired ? 'danger' : ''}`}><Icon name="clock" /><div><strong>{expired ? 'La pre-reserva venció' : 'Cupo apartado temporalmente'}</strong><span>{expired ? 'El lugar debe volver a validarse.' : `Vigente hasta ${dt(created.expiresAt)}`}</span></div></div><div className="transfer-layout"><div className="bank-card"><span>TRANSFERENCIA BANCARIA</span><h3>{config.transfer.bank}</h3><dl><div><dt>Beneficiario</dt><dd>{config.transfer.beneficiary}</dd></div><div><dt>CLABE</dt><dd>{config.transfer.clabe}</dd></div><div><dt>Cuenta</dt><dd>{config.transfer.account}</dd></div><div><dt>Concepto / referencia</dt><dd>{created.folio}</dd></div><div><dt>Importe a transferir</dt><dd className="amount">{money(created.deposit, created.currency)}</dd></div></dl></div><div className="transfer-help"><h3>Siguiente paso</h3><p>{config.transfer.instructions}</p><label className="upload-box"><Icon name="upload" size={24}/><strong>{proofName || 'Adjuntar comprobante'}</strong><span>Imagen o PDF · demo local</span><input type="file" accept="image/*,.pdf" onChange={e => setProofName(e.target.files?.[0]?.name || '')}/></label><button className="btn btn-primary btn-full" onClick={attachProof} disabled={!proofName || expired}>Enviar comprobante</button>{created.status === 'proof_uploaded' && <div className="proof-ok"><Icon name="check" /> Comprobante enviado. Pendiente de validación.</div>}</div></div></div>}
+    {step === 3 && created && <div className="modal-content"><div className={`status-banner ${expired ? 'danger' : ''}`}><Icon name="clock" /><div><strong>{expired ? 'La pre-reserva venció' : 'Cupo apartado temporalmente'}</strong><span>{expired ? 'El lugar debe volver a validarse.' : `Vigente hasta ${dt(created.expiresAt)}`}</span></div></div><div className="transfer-layout"><div className="bank-card"><span>TRANSFERENCIA BANCARIA</span><h3>{config.transfer.bank}</h3><dl><div><dt>Beneficiario</dt><dd>{config.transfer.beneficiary}</dd></div><div><dt>CLABE</dt><dd>{config.transfer.clabe}</dd></div><div><dt>Cuenta</dt><dd>{config.transfer.account}</dd></div><div><dt>Concepto / referencia</dt><dd>{created.folio}</dd></div><div><dt>Importe a transferir</dt><dd className="amount">{money(created.deposit, created.currency)}</dd></div></dl></div><div className="transfer-help"><h3>Siguiente paso</h3><p>{config.transfer.instructions}</p><label className="upload-box"><Icon name="upload" size={24}/><strong>{proofName || 'Elegir referencia del comprobante'}</strong><span>{hasCloud ? 'Esta versión registra el nombre, no almacena el archivo. Envíalo por WhatsApp.' : 'Imagen o PDF · demo local'}</span><input type="file" accept="image/*,.pdf" onChange={e => setProofName(e.target.files?.[0]?.name || '')}/></label><button className="btn btn-primary btn-full" onClick={attachProof} disabled={!proofName || expired || busy}>Registrar referencia del comprobante</button>{created.status === 'proof_uploaded' && <div className="proof-ok"><Icon name="check" /> Referencia registrada. Envía el archivo al guía para validación.</div>}</div></div></div>}
   </div></div>
 }
 
 function Field({ label, children }) { return <label className="field"><span>{label}</span>{children}</label> }
 
-function Admin({ config, setConfig, bookings, setBookings, onPublic, notify }) {
+function Admin({ config, setConfig, bookings, setBookings, onPublic, onLogout, notify }) {
   const [tab, setTab] = useState('dashboard')
   const [selectedService, setSelectedService] = useState(null)
   const activeBookings = bookings.filter(b => !['cancelled','rejected','expired'].includes(b.status))
@@ -277,9 +356,9 @@ function Admin({ config, setConfig, bookings, setBookings, onPublic, notify }) {
       <AdminNav id="bookings" tab={tab} setTab={setTab} icon="users" label="Reservas" badge={pending || null} />
       <AdminNav id="payments" tab={tab} setTab={setTab} icon="card" label="Transferencias" />
       <AdminNav id="links" tab={tab} setTab={setTab} icon="external" label="Links" />
-    </nav><div className="sidebar-bottom"><button className="btn btn-sidebar" onClick={onPublic}><Icon name="eye" /> Ver sitio público</button><small>Demo frontend · localStorage</small></div></aside>
+    </nav><div className="sidebar-bottom"><button className="btn btn-sidebar" onClick={onPublic}><Icon name="eye" /> Ver sitio público</button><small>{hasCloud ? 'Supabase · almacenamiento en nube' : 'Demo frontend · localStorage'}</small></div></aside>
 
-    <section className="admin-main"><header className="admin-topbar"><div><span className="admin-kicker">PANEL ADMINISTRATIVO</span><h1>{adminTitle(tab)}</h1></div><button className="btn btn-primary" onClick={onPublic}><Icon name="eye"/> Vista pública</button></header>
+    <section className="admin-main"><header className="admin-topbar"><div><span className="admin-kicker">PANEL ADMINISTRATIVO</span><h1>{adminTitle(tab)}</h1></div><div style={{display:'flex',gap:8}}><button className="btn btn-primary" onClick={onPublic}><Icon name="eye"/> Vista pública</button>{hasCloud&&<button className="btn btn-ghost" onClick={onLogout}>Cerrar sesión</button>}</div></header>
       <div className="admin-content">
         {tab === 'dashboard' && <Dashboard config={config} bookings={bookings} pending={pending} confirmed={confirmed} />}
         {tab === 'content' && <ContentEditor config={config} setConfig={setConfig} notify={notify} />}
@@ -307,7 +386,7 @@ function Empty({ text }) { return <div className="empty"><span>—</span><p>{tex
 function ContentEditor({ config, setConfig, notify }) {
   const brand = config.brand
   const update = (field, value) => setConfig({...config, brand:{...brand,[field]:value}})
-  return <Panel title="Landing pública" subtitle="Edita los textos, datos de contacto e imagen principal. Los cambios se reflejan de inmediato." actions={<button className="btn btn-primary" onClick={()=>notify('Cambios guardados en este navegador.')}>Guardar cambios</button>}><div className="editor-grid"><div className="form-stack"><Field label="Nombre comercial"><input value={brand.name} onChange={e=>update('name',e.target.value)}/></Field><Field label="Título principal"><textarea rows="3" value={brand.tagline} onChange={e=>update('tagline',e.target.value)}/></Field><Field label="Descripción"><textarea rows="4" value={brand.description} onChange={e=>update('description',e.target.value)}/></Field><Field label="URL de imagen principal"><input value={brand.heroImage} onChange={e=>update('heroImage',e.target.value)}/></Field><div className="form-grid"><Field label="Ciudad / región"><input value={brand.city} onChange={e=>update('city',e.target.value)}/></Field><Field label="WhatsApp (con lada país)"><input value={brand.whatsapp} onChange={e=>update('whatsapp',e.target.value)}/></Field><Field label="Correo"><input value={brand.email} onChange={e=>update('email',e.target.value)}/></Field><Field label="Teléfono"><input value={brand.phone} onChange={e=>update('phone',e.target.value)}/></Field></div><div className="form-grid"><Field label="Color principal"><input type="color" value={brand.primaryColor} onChange={e=>update('primaryColor',e.target.value)}/></Field><Field label="Color acento"><input type="color" value={brand.accentColor} onChange={e=>update('accentColor',e.target.value)}/></Field></div></div><div className="preview-card"><span>Vista previa</span><img src={brand.heroImage} alt="Vista previa"/><h3>{brand.tagline}</h3><p>{brand.description}</p></div></div></Panel>
+  return <Panel title="Landing pública" subtitle="Edita los textos, datos de contacto e imagen principal. Los cambios se reflejan de inmediato." actions={<button className="btn btn-primary" onClick={()=>notify(hasCloud ? 'Los cambios se sincronizan automáticamente.' : 'Cambios guardados en este navegador.')}>Guardar cambios</button>}><div className="editor-grid"><div className="form-stack"><Field label="Nombre comercial"><input value={brand.name} onChange={e=>update('name',e.target.value)}/></Field><Field label="Título principal"><textarea rows="3" value={brand.tagline} onChange={e=>update('tagline',e.target.value)}/></Field><Field label="Descripción"><textarea rows="4" value={brand.description} onChange={e=>update('description',e.target.value)}/></Field><Field label="URL de imagen principal"><input value={brand.heroImage} onChange={e=>update('heroImage',e.target.value)}/></Field><div className="form-grid"><Field label="Ciudad / región"><input value={brand.city} onChange={e=>update('city',e.target.value)}/></Field><Field label="WhatsApp (con lada país)"><input value={brand.whatsapp} onChange={e=>update('whatsapp',e.target.value)}/></Field><Field label="Correo"><input value={brand.email} onChange={e=>update('email',e.target.value)}/></Field><Field label="Teléfono"><input value={brand.phone} onChange={e=>update('phone',e.target.value)}/></Field></div><div className="form-grid"><Field label="Color principal"><input type="color" value={brand.primaryColor} onChange={e=>update('primaryColor',e.target.value)}/></Field><Field label="Color acento"><input type="color" value={brand.accentColor} onChange={e=>update('accentColor',e.target.value)}/></Field></div></div><div className="preview-card"><span>Vista previa</span><img src={brand.heroImage} alt="Vista previa"/><h3>{brand.tagline}</h3><p>{brand.description}</p></div></div></Panel>
 }
 
 function ServicesEditor({ config, setConfig, selectedService, setSelectedService, notify }) {
@@ -323,7 +402,7 @@ function ServicesEditor({ config, setConfig, selectedService, setSelectedService
 function Bookings({ bookings, setBookings, notify }) {
   const [filter, setFilter] = useState('all')
   const visible = bookings.filter(b => filter==='all' ? true : b.status===filter)
-  function status(id, value){ setBookings(bookings.map(b=>b.id===id?{...b,status:value}:b)); notify('Estatus actualizado.') }
+  async function status(id, value){try {if(hasCloud) await setBookingStatus(id,value);setBookings(prev=>prev.map(b=>b.id===id?{...b,status:value}:b));notify('Estatus actualizado.')}catch(e){notify('No se pudo actualizar: '+e.message)} }
   return <Panel title="Reservas y apartados" subtitle="Gestiona comprobantes, confirmaciones y liberación de cupos." actions={<select className="select" value={filter} onChange={e=>setFilter(e.target.value)}><option value="all">Todos</option><option value="awaiting_transfer">Esperando transferencia</option><option value="proof_uploaded">Comprobante enviado</option><option value="confirmed">Confirmadas</option><option value="rejected">Rechazadas</option><option value="cancelled">Canceladas</option></select>}>{visible.length?<div className="booking-list">{visible.map(b=><article className="booking-row" key={b.id}><div className="folio-col"><b>{b.folio}</b><Status status={['awaiting_transfer','proof_uploaded'].includes(b.status) && new Date(b.expiresAt) < new Date() ? 'expired' : b.status}/></div><div><strong>{b.customer.name}</strong><span>{b.customer.phone} · {b.customer.email}</span></div><div><strong>{b.serviceName}</strong><span>{b.date} · {b.time} · {b.people} persona(s)</span></div><div><strong>{money(b.deposit,b.currency)}</strong><span>Anticipo · total {money(b.total,b.currency)}</span></div><div className="booking-actions"><select value={b.status} onChange={e=>status(b.id,e.target.value)}><option value="awaiting_transfer">Esperando transferencia</option><option value="proof_uploaded">Comprobante enviado</option><option value="confirmed">Confirmada</option><option value="rejected">Rechazada</option><option value="cancelled">Cancelada</option></select>{b.proofName&&<small>📎 {b.proofName}</small>}</div></article>)}</div>:<Empty text="No hay reservas con este filtro."/>}</Panel>
 }
 
@@ -342,7 +421,7 @@ function LinksEditor({ config, setConfig, notify }) {
 }
 
 function Status({ status }) {
-  const map={active:['Publicado','green'],inactive:['Borrador','gray'],awaiting_transfer:['Esperando transferencia','amber'],proof_uploaded:['Comprobante enviado','blue'],confirmed:['Confirmada','green'],rejected:['Rechazada','red'],cancelled:['Cancelada','gray'],expired:['Vencida','red']}
+  const map={active:['Publicado','green'],inactive:['Borrador','gray'],awaiting_transfer:['Esperando transferencia','amber'],proof_uploaded:['Referencia registrada','blue'],confirmed:['Confirmada','green'],rejected:['Rechazada','red'],cancelled:['Cancelada','gray'],expired:['Vencida','red']}
   const [label,tone]=map[status]||[status,'gray']
   return <span className={`status ${tone}`}>{label}</span>
 }

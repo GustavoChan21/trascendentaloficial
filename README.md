@@ -1,60 +1,34 @@
-# Guía Turístico — Landing + Panel Administrativo
+# Trascendental Oficial
 
-Primera versión funcional en React + Vite preparada para publicarse como sitio estático en GitHub Pages.
+Landing pública y panel de administración de servicios turísticos construidos con React + Vite, listos para ser compilados con Vercel o GitHub Actions (GitHub Pages). Todos los archivos fuente principales están en la raíz.
 
-## Qué incluye
+## Publicación rápida
 
-- Landing pública administrable.
-- Catálogo de recorridos y servicios.
-- Edición de contenido, imágenes por URL, precios, cupos, anticipos y links.
-- Flujo de pre-reserva para recorridos con control de cupo.
-- Generación de folio y vigencia de apartado.
-- Datos de transferencia configurables.
-- Carga simulada de comprobante.
-- Panel para confirmar, rechazar o cancelar reservas.
-- Persistencia local con `localStorage` para validar toda la UX sin backend.
-- Diseño responsive.
+1. Copia todo el contenido de este directorio a la **raíz** del repositorio `GustavoChan21/trascendentaloficial`, conservando `.github/workflows/pages.yml` y `.env.production`.
+2. En Vercel enlaza ese repositorio con proyecto `trascendentaloficial`, rama `main`, preset Vite, build `npm run build`, output `dist`, root `./`. Los siguientes pushes despliegan automáticamente.
+3. En GitHub > Settings > Pages elige **GitHub Actions** para habilitar también el build de GitHub Pages. Sin esa opción no funciona el JSX.
+4. Supabase ya tiene tablas/RLS/RPC si se aplicó `supabase-schema.sql`. No vuelvas a ejecutar el SQL si ya está instalado.
+5. En Supabase Authentication crea al primer usuario y autorízalo en `public.admin_users` siguiendo `DEPLOY-VERCEL.md`.
+6. En el panel configura datos reales, imágenes, precios, cupos, horarios, teléfonos, y banco. El contenido inicial es de ejemplo. **No anuncies reservas hasta sustituir todos los datos de prueba.**
 
-## Ejecutar localmente
+## Desarrollo local
 
 ```bash
 npm install
 npm run dev
-```
-
-## Compilar
-
-```bash
 npm run build
-npm run preview
 ```
 
-## Publicar en GitHub Pages
+- `supabase.js` aloja el cliente de lectura pública y funciones seguras de reserva.
+- `supabase-schema.sql` define RLS y control de concurrencia del cupo.
+- `vercel.json` define compilación Vite y fallback SPA.
+- `.env.production` contiene exclusivamente la URL y clave **publishable**, nunca una contraseña o clave secreta.
+- `DEPLOY-VERCEL.md` describe el paso a paso.
 
-El proyecto usa `base: './'`, por lo que funciona tanto en `usuario.github.io` como en `usuario.github.io/repositorio`.
+### Estado de pagos
 
-1. Crea un repositorio y sube estos archivos a la raíz.
-2. Ejecuta `npm install`.
-3. Configura en `package.json` opcionalmente `homepage` si deseas documentar la URL pública.
-4. Ejecuta:
+La transferencia **no se verifica automáticamente**. La versión actual permite registrar la referencia o nombre del comprobante, pero no almacena archivos en Supabase Storage. El guía debe recibir el comprobante por WhatsApp, verificar el movimiento bancario y confirmar manualmente la reserva desde el panel.
 
-```bash
-npm run deploy
-```
+### Seguridad pendiente para operación comercial
 
-El script publica `dist/` en la rama `gh-pages`. En GitHub, selecciona esa rama como fuente de Pages si no queda configurada automáticamente.
-
-## Arquitectura recomendada para producción
-
-Esta versión usa `localStorage` sólo como prototipo funcional. Para producción se recomienda:
-
-- Frontend: React + Vite.
-- Hosting público: GitHub Pages.
-- Backend/BaaS: Supabase.
-- Auth del panel: Supabase Auth.
-- Base de datos: PostgreSQL de Supabase.
-- Imágenes y comprobantes: Supabase Storage.
-- Funciones automáticas: Edge Functions / Cron para vencer apartados.
-- Notificaciones: correo + WhatsApp mediante proveedor externo.
-
-El archivo `supabase-schema.sql` contiene una base de modelo de datos para la siguiente fase.
+Antes de anunciar reservas reales, añadir antispam, rate limiting, verificación de fechas/salidas, almacenamiento privado de comprobantes, registro de auditoría y notificaciones al cliente. Las funciones anónimas SECURITY DEFINER son puntos públicos intencionales, pero requieren monitoreo y protección adicional frente a abuso.
