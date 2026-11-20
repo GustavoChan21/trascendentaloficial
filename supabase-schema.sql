@@ -115,3 +115,18 @@ grant update on public.site_state to authenticated;
 
 -- Después de crear el primer usuario en Authentication > Users, autorizarlo explícitamente:
 -- insert into public.admin_users (user_id) values ('UUID-DEL-USUARIO');
+
+-- Banco de imágenes del CMS. Ejecutar también en instalaciones existentes.
+insert into storage.buckets (id,name,public,file_size_limit,allowed_mime_types)
+values ('site-media','site-media',true,8388608,array['image/jpeg','image/png','image/webp'])
+on conflict(id) do update set public=true,file_size_limit=8388608,allowed_mime_types=array['image/jpeg','image/png','image/webp'];
+drop policy if exists "site admin uploads media" on storage.objects;
+create policy "site admin uploads media" on storage.objects for insert to authenticated
+with check(bucket_id='site-media' and exists(select 1 from public.admin_users where user_id=(select auth.uid())));
+drop policy if exists "site admin updates media" on storage.objects;
+create policy "site admin updates media" on storage.objects for update to authenticated
+using(bucket_id='site-media' and exists(select 1 from public.admin_users where user_id=(select auth.uid())))
+with check(bucket_id='site-media' and exists(select 1 from public.admin_users where user_id=(select auth.uid())));
+drop policy if exists "site admin deletes media" on storage.objects;
+create policy "site admin deletes media" on storage.objects for delete to authenticated
+using(bucket_id='site-media' and exists(select 1 from public.admin_users where user_id=(select auth.uid())));

@@ -1,34 +1,35 @@
-# Trascendental Oficial
+# Trascendental Oficial — UI v2
 
-Landing pública y panel de administración de servicios turísticos construidos con React + Vite, listos para ser compilados con Vercel o GitHub Actions (GitHub Pages). Todos los archivos fuente principales están en la raíz.
+React + Vite + Supabase + Vercel. Archivos de la aplicación en la raíz (15 archivos en total (incluyendo archivos ocultos y workflow `.github/workflows/pages.yml`)).
 
-## Publicación rápida
+## Rutas
+- `/` y `/public`: landing pública (no muestra enlace administrativo).
+- `/admin`: panel protegido mediante Supabase Auth y `public.admin_users`.
+- En GitHub Pages: `/trascendentaloficial/public` y `/trascendentaloficial/admin`; se publica `404.html` para deep links.
 
-1. Copia todo el contenido de este directorio a la **raíz** del repositorio `GustavoChan21/trascendentaloficial`, conservando `.github/workflows/pages.yml` y `.env.production`.
-2. En Vercel enlaza ese repositorio con proyecto `trascendentaloficial`, rama `main`, preset Vite, build `npm run build`, output `dist`, root `./`. Los siguientes pushes despliegan automáticamente.
-3. En GitHub > Settings > Pages elige **GitHub Actions** para habilitar también el build de GitHub Pages. Sin esa opción no funciona el JSX.
-4. Supabase ya tiene tablas/RLS/RPC si se aplicó `supabase-schema.sql`. No vuelvas a ejecutar el SQL si ya está instalado.
-5. En Supabase Authentication crea al primer usuario y autorízalo en `public.admin_users` siguiendo `DEPLOY-VERCEL.md`.
-6. En el panel configura datos reales, imágenes, precios, cupos, horarios, teléfonos, y banco. El contenido inicial es de ejemplo. **No anuncies reservas hasta sustituir todos los datos de prueba.**
-
-## Desarrollo local
-
+## Desarrollo
 ```bash
 npm install
 npm run dev
 npm run build
 ```
 
-- `supabase.js` aloja el cliente de lectura pública y funciones seguras de reserva.
-- `supabase-schema.sql` define RLS y control de concurrencia del cupo.
-- `vercel.json` define compilación Vite y fallback SPA.
-- `.env.production` contiene exclusivamente la URL y clave **publishable**, nunca una contraseña o clave secreta.
-- `DEPLOY-VERCEL.md` describe el paso a paso.
+## Vercel
+Se conecta repositorio GitHub `GustavoChan21/trascendentaloficial` rama `main`, Framework Vite, Build `npm run build`, Output `dist`, Root `./`. `vercel.json` ya contiene el rewrite de SPA.
 
-### Estado de pagos
+## Supabase
+Las variables `VITE_SUPABASE_URL` y `VITE_SUPABASE_PUBLISHABLE_KEY` existen en `.env.production`, y también deben configurarse en Vercel. Nunca incluir `service_role` o password PostgreSQL en frontend.
 
-La transferencia **no se verifica automáticamente**. La versión actual permite registrar la referencia o nombre del comprobante, pero no almacena archivos en Supabase Storage. El guía debe recibir el comprobante por WhatsApp, verificar el movimiento bancario y confirmar manualmente la reserva desde el panel.
+Base: `site_state` (contenido), `admin_users` (control de acceso), `tour_bookings` (apartados), `storage.site-media` (imágenes del contenido). El esquema está en `supabase-schema.sql`.
 
-### Seguridad pendiente para operación comercial
+Autorización del primer admin: crear usuario en Authentication > Users y ejecutar `insert into public.admin_users(user_id) values ('UUID-USUARIO')`. Para imágenes: bucket público `site-media`, escritura restringida a admins.
 
-Antes de anunciar reservas reales, añadir antispam, rate limiting, verificación de fechas/salidas, almacenamiento privado de comprobantes, registro de auditoría y notificaciones al cliente. Las funciones anónimas SECURITY DEFINER son puntos públicos intencionales, pero requieren monitoreo y protección adicional frente a abuso.
+**Importante:** aún NO se almacenan archivos de comprobantes de pago en Storage, sólo se registra su nombre y se solicita enviarlos por WhatsApp. No se debe aprobar una transferencia sin revisar el comprobante real. Las reservas usan RPC transaccional para impedir sobreventa simultánea.
+
+## UI
+Editor modal para identidad/portada, textos de secciones, servicios (imagen/estado/precio/cupo/anticipo), transferencias, enlaces y políticas. El editor realiza persistencia en Supabase. Las imágenes se pueden subir como JPG/PNG/WebP de hasta 8 MB.
+
+Referencias consultadas: https://github.com/shadcndashboard/shadcndashboard y https://github.com/arnobt78/Travel-Tourism-Landing-Page--React-Frontend. Implementación visual original; no se copiaron archivos de esos repositorios.
+
+## Inventario y actualización desde versiones anteriores
+Consulta `MANIFEST.md` para la lista definitiva de **15 archivos** y los archivos obsoletos que se deben eliminar al actualizar el repositorio. No mezcles la demo ni los `.jsx` de entregas anteriores.
